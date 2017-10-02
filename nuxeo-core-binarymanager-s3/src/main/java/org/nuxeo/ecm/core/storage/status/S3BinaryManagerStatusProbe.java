@@ -19,7 +19,6 @@
 package org.nuxeo.ecm.core.storage.status;
 
 import java.util.Map;
-import java.util.Map.Entry;
 
 import org.nuxeo.ecm.core.blob.BlobManager;
 import org.nuxeo.ecm.core.blob.BlobProvider;
@@ -40,14 +39,13 @@ public class S3BinaryManagerStatusProbe implements Probe {
     public ProbeStatus run() {
 
         Map<String, BlobProvider> providers = Framework.getService(BlobManager.class).getBlobProviders();
-        for (Entry<String, BlobProvider> es : providers.entrySet()) {
-            BlobProvider blobProvider = es.getValue();
+        for (BlobProvider blobProvider : providers.values()) {
             BinaryManager bm = blobProvider.getBinaryManager();
             if (bm != null && bm instanceof S3BinaryManager && ((S3BinaryManager) bm).canAccessBucket()) {
                 return ProbeStatus.newSuccess("S3BinaryManager can access the configured bucket");
             }
         }
-        return ProbeStatus.newFailure("S3BinaryManager can not access the configured bucket");
+        return ProbeStatus.newFailure("S3BinaryManager cannot access the configured bucket");
 
     }
 }
