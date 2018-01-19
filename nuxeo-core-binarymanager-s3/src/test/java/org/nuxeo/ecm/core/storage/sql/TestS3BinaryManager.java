@@ -24,6 +24,8 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.junit.Assume.assumeTrue;
+import static org.nuxeo.ecm.core.blob.binary.CachingBinaryManager.DEBUG_READ_CACHED_BINARY;
+import static org.nuxeo.ecm.core.blob.binary.CachingBinaryManager.DEBUG_WRITE_CACHED_BINARY;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -116,17 +118,24 @@ public class TestS3BinaryManager extends AbstractS3BinaryTest<S3BinaryManager> {
     @Test
     public void testS3BinaryManagerOverwrite() throws Exception {
         // store binary
+        Framework.getProperties().remove(DEBUG_WRITE_CACHED_BINARY);
+        Framework.getProperties().remove(DEBUG_READ_CACHED_BINARY);
         Binary binary = binaryManager.getBinary(Blobs.createBlob(CONTENT));
         assertNotNull(binary);
         assertEquals(CONTENT, toString(binary.getStream()));
-        assertNull(Framework.getProperty("cachedBinary"));
+        // check that the file was not in cache on write
+        assertNull(Framework.getProperty(DEBUG_WRITE_CACHED_BINARY));
+        assertEquals(binary.getDigest(), Framework.getProperty(DEBUG_READ_CACHED_BINARY));
 
         // store the same content again
+        Framework.getProperties().remove(DEBUG_WRITE_CACHED_BINARY);
+        Framework.getProperties().remove(DEBUG_READ_CACHED_BINARY);
         Binary binary2 = binaryManager.getBinary(Blobs.createBlob(CONTENT));
         assertNotNull(binary2);
         assertEquals(CONTENT, toString(binary.getStream()));
-        // check that S3 bucked was not called for no valid reason
-        assertEquals(binary2.getDigest(), Framework.getProperty("cachedBinary"));
+        // check that file was accessed from cache
+        assertEquals(binary2.getDigest(), Framework.getProperty(DEBUG_WRITE_CACHED_BINARY));
+        assertEquals(binary2.getDigest(), Framework.getProperty(DEBUG_READ_CACHED_BINARY));
     }
 
     @Test
@@ -181,7 +190,7 @@ public class TestS3BinaryManager extends AbstractS3BinaryTest<S3BinaryManager> {
         }
         assertTrue("IOException should occured as content is corrupted", exceptionOccured);
     }
-    
+
     @Override
     @Test
     public void testBinaryManagerGC() throws Exception {
