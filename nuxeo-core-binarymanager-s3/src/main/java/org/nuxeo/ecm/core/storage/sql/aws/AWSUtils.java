@@ -5,6 +5,7 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.stream.Collectors;
 
+import org.apache.commons.lang3.StringUtils;
 import org.nuxeo.ecm.core.api.NuxeoException;
 import com.amazonaws.services.s3.AmazonS3;
 import com.amazonaws.services.s3.model.CompleteMultipartUploadRequest;
@@ -25,7 +26,11 @@ public class AWSUtils {
 
     }
 
-    public static ObjectMetadata copyBigFile(AmazonS3 s3Client, ObjectMetadata objectMetadata, String bucket, String sourceKey, String targetKey, boolean deleteSource) {
+    public static ObjectMetadata copyBigFile(AmazonS3 s3Client, ObjectMetadata objectMetadata, String bucket, String sourceKey, String targetBucket, String targetKey, boolean deleteSource) {
+        if (StringUtils.isEmpty(targetBucket)) {
+            targetBucket = bucket;
+        }
+
         List<CopyPartResult> copyResponses = new LinkedList<>();
 
         InitiateMultipartUploadRequest initiateMultipartUploadRequest = new InitiateMultipartUploadRequest(bucket, targetKey);
@@ -43,7 +48,7 @@ public class AWSUtils {
             for (int i = 1; bytePosition < objectSize; ++i) {
                 // Step 5. Save copy response.
                 CopyPartRequest copyRequest = new CopyPartRequest()
-                        .withDestinationBucketName(bucket)
+                        .withDestinationBucketName(targetBucket)
                         .withDestinationKey(targetKey)
                         .withSourceBucketName(bucket)
                         .withSourceKey(sourceKey)
@@ -70,17 +75,29 @@ public class AWSUtils {
         } catch (Exception e) {
             throw new NuxeoException(e);
         }
+
     }
 
-    private ObjectMetadata copyFile(AmazonS3 s3Client, ObjectMetadata objectMetadata, String bucket, String sourceKey, String targetKey, boolean deleteSource) {
-        CopyObjectRequest copyObjectRequest = new CopyObjectRequest(bucket, sourceKey, bucket, targetKey);
+    public static ObjectMetadata copyBigFile(AmazonS3 s3Client, ObjectMetadata objectMetadata, String bucket, String sourceKey, String targetKey, boolean deleteSource) {
+        return copyBigFile(s3Client, objectMetadata, bucket, sourceKey, null, targetKey, deleteSource);
+    }
+
+    public static ObjectMetadata copyFile(AmazonS3 s3Client, ObjectMetadata objectMetadata, String bucket, String sourceKey, String targetBucket, String targetKey, boolean deleteSource) {
+        if (StringUtils.isEmpty(targetBucket)) {
+            targetBucket = bucket;
+        }
+        CopyObjectRequest copyObjectRequest = new CopyObjectRequest(bucket, sourceKey, targetBucket, targetKey);
         CopyObjectResult copyObjectResult = s3Client.copyObject(copyObjectRequest);
 
         if (deleteSource) {
             s3Client.deleteObject(bucket, sourceKey);
         }
 
-        return s3Client.getObjectMetadata(bucket, targetKey);
+        return s3Client.getObjectMetadata(targetBucket, targetKey);
+    }
+
+    public static ObjectMetadata copyFile(AmazonS3 s3Client, ObjectMetadata objectMetadata, String bucket, String sourceKey, String targetKey, boolean deleteSource) {
+        return copyFile(s3Client, objectMetadata, bucket, sourceKey, null, targetKey, deleteSource);
     }
 
     private static List<PartETag> responsesToETags(List<CopyPartResult> responses) {

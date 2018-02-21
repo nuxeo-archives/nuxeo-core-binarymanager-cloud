@@ -452,16 +452,24 @@ public class S3BinaryManager extends AbstractCloudBinaryManager {
         if (ManagedBlob.class.isAssignableFrom(blob.getClass())) {
             ManagedBlob managedBlob = (ManagedBlob) blob;
             BlobProvider blobProvider = Framework.getService(BlobManager.class).getBlobProvider(managedBlob.getProviderId());
+
             if (this != blobProvider) {
                 if (this.getClass().isAssignableFrom(blobProvider.getClass())) {
                     S3BinaryManager sourceBlobProvider = (S3BinaryManager) blobProvider;
+
+                    String digest = managedBlob.getKey();
+                    int colon = digest.indexOf(':');
+                    if (colon >= 0) {
+                        digest = digest.substring(colon + 1);
+                    }
+
                     try {
-                        ObjectMetadata objectMetadata = amazonS3.getObjectMetadata(sourceBlobProvider.bucketName, managedBlob.getKey());
+                        ObjectMetadata objectMetadata = amazonS3.getObjectMetadata(sourceBlobProvider.bucketName, digest);
                         ObjectMetadata result;
                         if(objectMetadata.getContentLength() >= FIVE_GB) {
-                            result = AWSUtils.copyBigFile(amazonS3, objectMetadata, sourceBlobProvider.bucketName, managedBlob.getKey(), managedBlob.getKey(), true);
+                            result = AWSUtils.copyBigFile(amazonS3, objectMetadata, sourceBlobProvider.bucketName, digest, bucketName, digest, true);
                         } else {
-                            result = AWSUtils.copyBigFile(amazonS3, objectMetadata, sourceBlobProvider.bucketName, managedBlob.getKey(), managedBlob.getKey(), true);
+                            result = AWSUtils.copyFile(amazonS3, objectMetadata, sourceBlobProvider.bucketName, digest, bucketName, digest, true);
                         }
 
                         return result.getETag();
@@ -473,6 +481,7 @@ public class S3BinaryManager extends AbstractCloudBinaryManager {
         }
         return super.writeBlob(blob);
     }
+
     public class S3FileStorage implements FileStorage {
 
         @Override
