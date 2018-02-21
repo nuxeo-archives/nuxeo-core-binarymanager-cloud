@@ -21,6 +21,7 @@ package org.nuxeo.ecm.core.storage.sql;
 
 import static org.apache.commons.lang3.StringUtils.isBlank;
 import static org.apache.commons.lang3.StringUtils.isNotBlank;
+import static org.nuxeo.ecm.core.storage.sql.aws.AWSUtils.FIVE_GB;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -37,8 +38,11 @@ import java.security.cert.Certificate;
 import java.util.Collection;
 import java.util.Date;
 import java.util.HashSet;
+import java.util.LinkedList;
+import java.util.List;
 import java.util.Set;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 import javax.servlet.http.HttpServletRequest;
 
@@ -49,9 +53,13 @@ import org.apache.commons.logging.LogFactory;
 import org.nuxeo.common.Environment;
 import org.nuxeo.ecm.blob.AbstractBinaryGarbageCollector;
 import org.nuxeo.ecm.blob.AbstractCloudBinaryManager;
+import org.nuxeo.ecm.core.api.Blob;
+import org.nuxeo.ecm.core.blob.BlobManager;
+import org.nuxeo.ecm.core.blob.BlobProvider;
 import org.nuxeo.ecm.core.blob.ManagedBlob;
 import org.nuxeo.ecm.core.blob.binary.BinaryGarbageCollector;
 import org.nuxeo.ecm.core.blob.binary.FileStorage;
+import org.nuxeo.ecm.core.storage.sql.aws.AWSUtils;
 import org.nuxeo.runtime.api.Framework;
 
 import com.amazonaws.AmazonClientException;
@@ -67,13 +75,21 @@ import com.amazonaws.services.s3.AmazonS3ClientBuilder;
 import com.amazonaws.services.s3.AmazonS3EncryptionClientBuilder;
 import com.amazonaws.services.s3.model.AmazonS3Exception;
 import com.amazonaws.services.s3.model.CannedAccessControlList;
+import com.amazonaws.services.s3.model.CompleteMultipartUploadRequest;
+import com.amazonaws.services.s3.model.CompleteMultipartUploadResult;
+import com.amazonaws.services.s3.model.CopyObjectResult;
+import com.amazonaws.services.s3.model.CopyPartRequest;
+import com.amazonaws.services.s3.model.CopyPartResult;
 import com.amazonaws.services.s3.model.CryptoConfiguration;
 import com.amazonaws.services.s3.model.EncryptedPutObjectRequest;
 import com.amazonaws.services.s3.model.EncryptionMaterials;
 import com.amazonaws.services.s3.model.GeneratePresignedUrlRequest;
 import com.amazonaws.services.s3.model.GetObjectRequest;
+import com.amazonaws.services.s3.model.InitiateMultipartUploadRequest;
+import com.amazonaws.services.s3.model.InitiateMultipartUploadResult;
 import com.amazonaws.services.s3.model.ObjectListing;
 import com.amazonaws.services.s3.model.ObjectMetadata;
+import com.amazonaws.services.s3.model.PartETag;
 import com.amazonaws.services.s3.model.PutObjectRequest;
 import com.amazonaws.services.s3.model.S3ObjectSummary;
 import com.amazonaws.services.s3.model.SSEAwsKeyManagementParams;
@@ -93,6 +109,8 @@ import com.google.common.base.MoreObjects;
  * if accessed before the stream.
  */
 public class S3BinaryManager extends AbstractCloudBinaryManager {
+
+    private static final Log logger = LogFactory.getLog(S3BinaryManager.class);
 
     private static final String MD5 = "MD5"; // must be MD5 for Etag
 
@@ -428,6 +446,31 @@ public class S3BinaryManager extends AbstractCloudBinaryManager {
         return new S3FileStorage();
     }
 
+    @Override
+    public String writeBlob(Blob blob) throws IOException {
+        // Attempt to do S3 Copy if the Source Blob provider is also S3
+        if (ManagedBlob.class.isAssignableFrom(blob.getClass())) {
+            ManagedBlob managedBlob = (ManagedBlob) blob;
+            BlobProvider blobProvider = Framework.getService(BlobManager.class).getBlobProvider(managedBlob.getProviderId());
+            if (this.getClass().isAssignableFrom(blobProvider.getClass())) {
+                S3BinaryManager sourceBlobProvider = (S3BinaryManager) blobProvider;
+                try {
+                    ObjectMetadata objectMetadata = amazonS3.getObjectMetadata(sourceBlobProvider.bucketName, managedBlob.getKey());
+                    ObjectMetadata result;
+                    if(objectMetadata.getContentLength() >= FIVE_GB) {
+                        result = AWSUtils.copyBigFile(amazonS3, objectMetadata, sourceBlobProvider.bucketName, managedBlob.getKey(), managedBlob.getKey(), true);
+                    } else {
+                        result = AWSUtils.copyBigFile(amazonS3, objectMetadata, sourceBlobProvider.bucketName, managedBlob.getKey(), managedBlob.getKey(), true);
+                    }
+
+                    return result.getETag();
+                } catch(Exception e) {
+                    logger.warn("Direct S3 Copy not supported, please check your keys and policies", e);
+                }
+            }
+        }
+        return super.writeBlob(blob);
+    }
     public class S3FileStorage implements FileStorage {
 
         @Override
