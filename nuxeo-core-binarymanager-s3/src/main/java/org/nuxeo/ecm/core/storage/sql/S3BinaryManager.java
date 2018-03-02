@@ -54,6 +54,7 @@ import org.nuxeo.common.Environment;
 import org.nuxeo.ecm.blob.AbstractBinaryGarbageCollector;
 import org.nuxeo.ecm.blob.AbstractCloudBinaryManager;
 import org.nuxeo.ecm.core.api.Blob;
+import org.nuxeo.ecm.core.api.NuxeoException;
 import org.nuxeo.ecm.core.blob.BlobManager;
 import org.nuxeo.ecm.core.blob.BlobProvider;
 import org.nuxeo.ecm.core.blob.ManagedBlob;
@@ -462,19 +463,31 @@ public class S3BinaryManager extends AbstractCloudBinaryManager {
                     if (colon >= 0) {
                         digest = digest.substring(colon + 1);
                     }
-
                     try {
-                        ObjectMetadata objectMetadata = amazonS3.getObjectMetadata(sourceBlobProvider.bucketName, digest);
+                        ObjectMetadata targetMetadata = amazonS3.getObjectMetadata(bucketName, digest);
+                        // The target blob already exists nothing to do.
+                        return targetMetadata.getETag();
+                    } catch (AmazonS3Exception e) {
+                        // normal case requires a copy
+                    }
+                    ObjectMetadata sourceMetadata;
+                    try {
+                        sourceMetadata = amazonS3.getObjectMetadata(sourceBlobProvider.bucketName, digest);
+                    } catch (AmazonS3Exception e) {
+                        throw new NuxeoException(String.format("Source blob does not exists: s3://%s/%s", sourceBlobProvider.bucketName,
+                                digest, blob), e);
+                    }
+                    try {
                         ObjectMetadata result;
-                        if(objectMetadata.getContentLength() >= FIVE_GB) {
-                            result = AWSUtils.copyBigFile(amazonS3, objectMetadata, sourceBlobProvider.bucketName, digest, bucketName, digest, true);
+                        if(sourceMetadata.getContentLength() >= FIVE_GB) {
+                            result = AWSUtils.copyBigFile(amazonS3, sourceMetadata, sourceBlobProvider.bucketName, digest, bucketName, digest, true);
                         } else {
-                            result = AWSUtils.copyFile(amazonS3, objectMetadata, sourceBlobProvider.bucketName, digest, bucketName, digest, true);
+                            result = AWSUtils.copyFile(amazonS3, sourceMetadata, sourceBlobProvider.bucketName, digest, bucketName, digest, true);
                         }
-
                         return result.getETag();
                     } catch(Exception e) {
-                        logger.warn("Direct S3 Copy not supported, please check your keys and policies", e);
+                        throw new NuxeoException(String.format("Cannot copy between bucket %s and %s, please check your keys and policies",
+                                sourceBlobProvider.bucketName, bucketName), e);
                     }
                 }
             }
@@ -508,7 +521,7 @@ public class S3BinaryManager extends AbstractCloudBinaryManager {
                     if (useServerSideEncryption) {
                         ObjectMetadata objectMetadata = new ObjectMetadata();
                         if (isNotBlank(serverSideKMSKeyID)) {
-                            SSEAwsKeyManagementParams keyManagementParams = 
+                            SSEAwsKeyManagementParams keyManagementParams =
                                 new SSEAwsKeyManagementParams(serverSideKMSKeyID);
                             request = request.withSSEAwsKeyManagementParams(keyManagementParams);
                         } else {
