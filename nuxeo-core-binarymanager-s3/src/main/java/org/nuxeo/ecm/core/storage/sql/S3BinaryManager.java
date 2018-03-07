@@ -16,12 +16,13 @@
  * Contributors:
  *     Mathieu Guillaume
  *     Florent Guillaume
+ *     Luís Duarte
  */
 package org.nuxeo.ecm.core.storage.sql;
 
 import static org.apache.commons.lang3.StringUtils.isBlank;
 import static org.apache.commons.lang3.StringUtils.isNotBlank;
-import static org.nuxeo.ecm.core.storage.sql.aws.AWSUtils.FIVE_GB;
+import static org.nuxeo.ecm.core.storage.sql.S3Utils.NON_MULTIPART_COPY_MAX_SIZE;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -35,15 +36,11 @@ import java.security.KeyStore;
 import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.cert.Certificate;
-import java.text.MessageFormat;
 import java.util.Collection;
 import java.util.Date;
 import java.util.HashSet;
-import java.util.LinkedList;
-import java.util.List;
 import java.util.Set;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 
 import javax.servlet.http.HttpServletRequest;
 
@@ -61,7 +58,6 @@ import org.nuxeo.ecm.core.blob.BlobProvider;
 import org.nuxeo.ecm.core.blob.ManagedBlob;
 import org.nuxeo.ecm.core.blob.binary.BinaryGarbageCollector;
 import org.nuxeo.ecm.core.blob.binary.FileStorage;
-import org.nuxeo.ecm.core.storage.sql.aws.AWSUtils;
 import org.nuxeo.runtime.api.Framework;
 
 import com.amazonaws.AmazonClientException;
@@ -69,7 +65,6 @@ import com.amazonaws.AmazonServiceException;
 import com.amazonaws.ClientConfiguration;
 import com.amazonaws.HttpMethod;
 import com.amazonaws.auth.AWSCredentialsProvider;
-import com.amazonaws.auth.InstanceProfileCredentialsProvider;
 import com.amazonaws.client.builder.AwsClientBuilder;
 import com.amazonaws.client.builder.AwsClientBuilder.EndpointConfiguration;
 import com.amazonaws.services.s3.AmazonS3;
@@ -77,21 +72,13 @@ import com.amazonaws.services.s3.AmazonS3ClientBuilder;
 import com.amazonaws.services.s3.AmazonS3EncryptionClientBuilder;
 import com.amazonaws.services.s3.model.AmazonS3Exception;
 import com.amazonaws.services.s3.model.CannedAccessControlList;
-import com.amazonaws.services.s3.model.CompleteMultipartUploadRequest;
-import com.amazonaws.services.s3.model.CompleteMultipartUploadResult;
-import com.amazonaws.services.s3.model.CopyObjectResult;
-import com.amazonaws.services.s3.model.CopyPartRequest;
-import com.amazonaws.services.s3.model.CopyPartResult;
 import com.amazonaws.services.s3.model.CryptoConfiguration;
 import com.amazonaws.services.s3.model.EncryptedPutObjectRequest;
 import com.amazonaws.services.s3.model.EncryptionMaterials;
 import com.amazonaws.services.s3.model.GeneratePresignedUrlRequest;
 import com.amazonaws.services.s3.model.GetObjectRequest;
-import com.amazonaws.services.s3.model.InitiateMultipartUploadRequest;
-import com.amazonaws.services.s3.model.InitiateMultipartUploadResult;
 import com.amazonaws.services.s3.model.ObjectListing;
 import com.amazonaws.services.s3.model.ObjectMetadata;
-import com.amazonaws.services.s3.model.PartETag;
 import com.amazonaws.services.s3.model.PutObjectRequest;
 import com.amazonaws.services.s3.model.S3ObjectSummary;
 import com.amazonaws.services.s3.model.SSEAwsKeyManagementParams;
@@ -111,8 +98,6 @@ import com.google.common.base.MoreObjects;
  * if accessed before the stream.
  */
 public class S3BinaryManager extends AbstractCloudBinaryManager {
-
-    private static final Log logger = LogFactory.getLog(S3BinaryManager.class);
 
     private static final String MD5 = "MD5"; // must be MD5 for Etag
 
@@ -271,16 +256,7 @@ public class S3BinaryManager extends AbstractCloudBinaryManager {
             bucketNamePrefix += "/";
         }
         // set up credentials
-        if (isBlank(awsID) || isBlank(awsSecret)) {
-            awsCredentialsProvider = InstanceProfileCredentialsProvider.getInstance();
-            try {
-                awsCredentialsProvider.getCredentials();
-            } catch (AmazonClientException e) {
-                throw new RuntimeException("Missing AWS credentials and no instance role found", e);
-            }
-        } else {
-            awsCredentialsProvider = new BasicAWSCredentialsProvider(awsID, awsSecret);
-        }
+        awsCredentialsProvider = S3Utils.getAWSCredentialsProvider(awsID, awsSecret);
 
         // set up client configuration
         clientConfiguration = new ClientConfiguration();
@@ -450,54 +426,68 @@ public class S3BinaryManager extends AbstractCloudBinaryManager {
 
     @Override
     public String writeBlob(Blob blob) throws IOException {
-        // Attempt to do S3 Copy if the Source Blob provider is also S3
-        if (blob instanceof ManagedBlob) {
-            ManagedBlob managedBlob = (ManagedBlob) blob;
-            BlobProvider blobProvider = Framework.getService(BlobManager.class).getBlobProvider(managedBlob.getProviderId());
-
-            if (this != blobProvider) {
-                if (blobProvider instanceof S3BinaryManager) {
-                    S3BinaryManager sourceBlobProvider = (S3BinaryManager) blobProvider;
-
-                    String digest = managedBlob.getKey();
-                    int colon = digest.indexOf(':');
-                    if (colon >= 0) {
-                        digest = digest.substring(colon + 1);
-                    }
-
-                    try {
-                        ObjectMetadata targetMetadata = amazonS3.getObjectMetadata(bucketName, digest);
-                        // The target blob already exists nothing to do.
-                        return targetMetadata.getETag();
-                    } catch (AmazonS3Exception e) {
-                        // Object does not exist, just continue
-                    }
-
-                    ObjectMetadata sourceMetadata;
-
-                    try {
-                        sourceMetadata = amazonS3.getObjectMetadata(sourceBlobProvider.bucketName, digest);
-                    } catch (AmazonS3Exception e) {
-                        throw new NuxeoException(MessageFormat.format("Source blob does not exists: s3://{0}/{1}", sourceBlobProvider.bucketName,
-                                digest, blob), e);
-                    }
-
-                    try {
-                        ObjectMetadata result;
-                        if (sourceMetadata.getContentLength() >= FIVE_GB) {
-                            result = AWSUtils.copyBigFile(amazonS3, sourceMetadata, sourceBlobProvider.bucketName, digest, bucketName, digest, true);
-                        } else {
-                            result = AWSUtils.copyFile(amazonS3, sourceMetadata, sourceBlobProvider.bucketName, digest, bucketName, digest, true);
-                        }
-
-                        return result.getETag();
-                    } catch (Exception e) {
-                        logger.warn("Direct S3 Copy not supported, please check your keys and policies", e);
-                    }
-                }
-            }
+        if (!(blob instanceof ManagedBlob)) {
+            return super.writeBlob(blob);
         }
-        return super.writeBlob(blob);
+        ManagedBlob managedBlob = (ManagedBlob) blob;
+        BlobProvider blobProvider = Framework.getService(BlobManager.class)
+                                             .getBlobProvider(managedBlob.getProviderId());
+        if (!(blobProvider instanceof S3BinaryManager) || blobProvider == this) {
+            return super.writeBlob(blob);
+        }
+
+        // use S3 direct copy as the source blob provider is also S3
+        S3BinaryManager sourceBlobProvider = (S3BinaryManager) blobProvider;
+
+        String digest = managedBlob.getKey();
+        int colon = digest.indexOf(':');
+        if (colon >= 0) {
+            digest = digest.substring(colon + 1);
+        }
+        String sourceBucketName = sourceBlobProvider.bucketName;
+        String sourceKey = sourceBlobProvider.bucketNamePrefix + digest;
+        String key = bucketNamePrefix + digest;
+        long t0 = 0;
+        if (log.isDebugEnabled()) {
+            t0 = System.currentTimeMillis();
+            log.debug("copying blob " + sourceKey + " to " + key);
+        }
+
+        try {
+            amazonS3.getObjectMetadata(bucketName, key);
+            if (log.isDebugEnabled()) {
+                log.debug("blob " + key + " is already in S3");
+            }
+            return digest;
+        } catch (AmazonServiceException e) {
+            if (!isMissingKey(e)) {
+                throw new IOException(e);
+            }
+            // object does not exist, just continue
+        }
+
+        // not already present -> copy the blob
+        ObjectMetadata sourceMetadata;
+        try {
+            sourceMetadata = amazonS3.getObjectMetadata(sourceBucketName, sourceKey);
+        } catch (AmazonServiceException e) {
+            throw new NuxeoException("Source blob does not exists: s3://" + sourceBucketName + "/" + sourceKey, e);
+        }
+        try {
+            if (sourceMetadata.getContentLength() > NON_MULTIPART_COPY_MAX_SIZE) {
+                S3Utils.copyBigFile(amazonS3, sourceMetadata, sourceBucketName, sourceKey, bucketName, key, true);
+            } else {
+                S3Utils.copyFile(amazonS3, sourceMetadata, sourceBucketName, sourceKey, bucketName, key, true);
+            }
+            if (log.isDebugEnabled()) {
+                long dtms = System.currentTimeMillis() - t0;
+                log.debug("copied blob " + sourceKey + " to " + key + " in " + dtms + "ms");
+            }
+            return digest;
+        } catch (RuntimeException e) {
+            log.warn("Direct S3 copy not supported, please check your keys and policies", e);
+            return super.writeBlob(blob);
+        }
     }
 
     public class S3FileStorage implements FileStorage {
@@ -526,7 +516,7 @@ public class S3BinaryManager extends AbstractCloudBinaryManager {
                     if (useServerSideEncryption) {
                         ObjectMetadata objectMetadata = new ObjectMetadata();
                         if (isNotBlank(serverSideKMSKeyID)) {
-                            SSEAwsKeyManagementParams keyManagementParams = 
+                            SSEAwsKeyManagementParams keyManagementParams =
                                 new SSEAwsKeyManagementParams(serverSideKMSKeyID);
                             request = request.withSSEAwsKeyManagementParams(keyManagementParams);
                         } else {
