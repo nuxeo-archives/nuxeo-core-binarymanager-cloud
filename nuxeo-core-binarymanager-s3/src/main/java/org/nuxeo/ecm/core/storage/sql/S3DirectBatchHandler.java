@@ -67,8 +67,6 @@ public class S3DirectBatchHandler extends AbstractBatchHandler {
     public static final String ACCELERATE_MODE_ENABLED_PROPERTY = "accelerateMode";
 
     protected static final List<String> MANDATORY_PROPERTIES = Arrays.asList( //
-            AWS_ID_PROPERTY, //
-            AWS_SECRET_PROPERTY, //
             BUCKET_NAME_PROPERTY, //
             BUCKET_REGION_PROPERTY, //
             ROLE_ARN_PROPERTY //
