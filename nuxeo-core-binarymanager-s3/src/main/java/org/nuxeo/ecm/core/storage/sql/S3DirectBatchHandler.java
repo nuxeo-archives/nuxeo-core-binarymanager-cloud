@@ -29,16 +29,20 @@ import static org.nuxeo.ecm.core.storage.sql.S3BinaryManager.BUCKET_REGION_PROPE
 import static org.nuxeo.ecm.core.storage.sql.S3Utils.NON_MULTIPART_COPY_MAX_SIZE;
 
 import java.io.Serializable;
+import java.text.MessageFormat;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
 
+import org.apache.commons.lang3.StringUtils;
 import org.nuxeo.ecm.automation.server.jaxrs.batch.Batch;
 import org.nuxeo.ecm.automation.server.jaxrs.batch.handler.AbstractBatchHandler;
 import org.nuxeo.ecm.automation.server.jaxrs.batch.handler.BatchFileInfo;
 import org.nuxeo.ecm.core.api.Blob;
 import org.nuxeo.ecm.core.api.NuxeoException;
+import org.nuxeo.ecm.core.api.NuxeoPrincipal;
+import org.nuxeo.ecm.core.api.local.ClientLoginModule;
 import org.nuxeo.ecm.core.blob.binary.BinaryBlob;
 import org.nuxeo.ecm.core.blob.binary.LazyBinary;
 
@@ -48,8 +52,9 @@ import com.amazonaws.services.s3.AmazonS3ClientBuilder;
 import com.amazonaws.services.s3.model.ObjectMetadata;
 import com.amazonaws.services.securitytoken.AWSSecurityTokenService;
 import com.amazonaws.services.securitytoken.AWSSecurityTokenServiceClientBuilder;
-import com.amazonaws.services.securitytoken.model.AssumeRoleRequest;
 import com.amazonaws.services.securitytoken.model.Credentials;
+import com.amazonaws.services.securitytoken.model.GetFederationTokenRequest;
+import com.amazonaws.services.securitytoken.model.GetFederationTokenResult;
 
 /**
  * Batch Handler allowing direct S3 upload.
@@ -62,16 +67,14 @@ public class S3DirectBatchHandler extends AbstractBatchHandler {
 
     // properties passed at initialization time from extension point
 
-    public static final String ROLE_ARN_PROPERTY = "roleArn";
-
     public static final String ACCELERATE_MODE_ENABLED_PROPERTY = "accelerateMode";
 
     protected static final List<String> MANDATORY_PROPERTIES = Arrays.asList( //
             AWS_ID_PROPERTY, //
             AWS_SECRET_PROPERTY, //
+            S3DirectBatchHandler.INFO_POLICY, //
             BUCKET_NAME_PROPERTY, //
-            BUCKET_REGION_PROPERTY, //
-            ROLE_ARN_PROPERTY //
+            BUCKET_REGION_PROPERTY //
     );
 
     // keys in the batch properties, returned to the client
@@ -92,6 +95,14 @@ public class S3DirectBatchHandler extends AbstractBatchHandler {
 
     public static final String INFO_USE_S3_ACCELERATE = "useS3Accelerate";
 
+    public static final String INFO_POLICY = "policy";
+
+    public static final String INFO_CREDS_DURATION = "tempCredentialsDuration";
+
+    public static final String DEFAULT_TEMP_CREDS_DURATION = "3600";
+
+    public static final String FEDERATED_USERNAME_TEMPLATE = "nx-batch-{0}";
+
     protected AWSSecurityTokenService stsClient;
 
     protected AmazonS3 amazonS3;
@@ -102,9 +113,11 @@ public class S3DirectBatchHandler extends AbstractBatchHandler {
 
     protected String bucketPrefix;
 
-    protected String roleArn;
-
     protected boolean accelerateModeEnabled;
+
+    protected String policy;
+
+    protected int tempCredentialsDuration;
 
     @Override
     protected void initialize(Map<String, String> properties) {
@@ -116,17 +129,23 @@ public class S3DirectBatchHandler extends AbstractBatchHandler {
         }
         region = properties.get(BUCKET_REGION_PROPERTY);
         bucket = properties.get(BUCKET_NAME_PROPERTY);
-        bucketPrefix = defaultIfEmpty(properties.get(BUCKET_PREFIX_PROPERTY), "");
-        roleArn = properties.get(ROLE_ARN_PROPERTY);
+        bucketPrefix = defaultIfEmpty(properties.get(BUCKET_PREFIX_PROPERTY), StringUtils.EMPTY);
         accelerateModeEnabled = Boolean.parseBoolean(properties.get(ACCELERATE_MODE_ENABLED_PROPERTY));
+        tempCredentialsDuration = Integer.parseInt(defaultIfEmpty(
+                properties.get(INFO_CREDS_DURATION), DEFAULT_TEMP_CREDS_DURATION));
         String awsSecretKeyId = properties.get(AWS_ID_PROPERTY);
         String awsSecretAccessKey = properties.get(AWS_SECRET_PROPERTY);
         AWSCredentialsProvider awsCredentialsProvider = S3Utils.getAWSCredentialsProvider(awsSecretKeyId,
                 awsSecretAccessKey);
+
+        policy = defaultIfEmpty(properties.get(INFO_POLICY), StringUtils.EMPTY);
+
         stsClient = AWSSecurityTokenServiceClientBuilder.standard()
                                                         .withRegion(region)
                                                         .withCredentials(awsCredentialsProvider)
                                                         .build();
+
+
         amazonS3 = AmazonS3ClientBuilder.standard()
                                         .withRegion(region)
                                         .withCredentials(awsCredentialsProvider)
@@ -143,9 +162,18 @@ public class S3DirectBatchHandler extends AbstractBatchHandler {
 
         // create the batch
         Batch batch = new Batch(batchId, parameters, getName(), getTransientStore());
-        AssumeRoleRequest assumeRoleRequest = new AssumeRoleRequest().withRoleSessionName(batch.getKey())
-                                                                     .withRoleArn(roleArn);
-        Credentials credentials = stsClient.assumeRole(assumeRoleRequest).getCredentials();
+        NuxeoPrincipal currentPrincipal = ClientLoginModule.getCurrentPrincipal();
+        String actingUser = currentPrincipal.getActingUser();
+
+        GetFederationTokenRequest federationTokenRequest = new GetFederationTokenRequest()
+                .withName(MessageFormat.format(FEDERATED_USERNAME_TEMPLATE, actingUser))
+                .withPolicy(policy)
+                .withDurationSeconds(tempCredentialsDuration);
+
+        GetFederationTokenResult result = stsClient.getFederationToken(federationTokenRequest);
+
+        Credentials credentials = result.getCredentials();
+
         Map<String, Object> properties = batch.getProperties();
         properties.put(INFO_AWS_SECRET_KEY_ID, credentials.getAccessKeyId());
         properties.put(INFO_AWS_SECRET_ACCESS_KEY, credentials.getSecretAccessKey());
