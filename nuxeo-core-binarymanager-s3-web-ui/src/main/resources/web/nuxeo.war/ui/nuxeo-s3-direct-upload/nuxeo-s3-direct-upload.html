@@ -132,7 +132,7 @@ limitations under the License.
       return true;
     };
 
-    S3Provider.prototype.cancelBatch = function() {
+    S3Provider.prototype.abortBatch = function() {
       if (this.uploader) {
         for (var i = 0; i < this.files.length; ++i) {
           var file = this.files[i];
@@ -141,6 +141,9 @@ limitations under the License.
           }
         }
       }
+    };
+
+    S3Provider.prototype.cancelBatch = function() {
       this.uploader = null;
       this.batchId = null;
       this.files = [];
