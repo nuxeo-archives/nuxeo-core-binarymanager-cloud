@@ -108,6 +108,15 @@ public class S3Utils {
             String sourceBucket, String sourceKey, String targetBucket, String targetKey, boolean deleteSource) {
         InitiateMultipartUploadRequest initiateMultipartUploadRequest = new InitiateMultipartUploadRequest(sourceBucket,
                 targetKey);
+
+        // specify the object metadata to ensure SSE algorithm is used
+        String sseAlgorithm = objectMetadata.getSSEAlgorithm();
+        if (sseAlgorithm != null) {
+            ObjectMetadata newObjectMetadata = new ObjectMetadata();
+            newObjectMetadata.setSSEAlgorithm(sseAlgorithm);
+            initiateMultipartUploadRequest.setObjectMetadata(newObjectMetadata);
+        }
+
         InitiateMultipartUploadResult initiateMultipartUploadResult = amazonS3.initiateMultipartUpload(
                 initiateMultipartUploadRequest);
 
@@ -156,6 +165,13 @@ public class S3Utils {
     public static ObjectMetadata copyFile(AmazonS3 amazonS3, ObjectMetadata objectMetadata, String sourceBucket,
             String sourceKey, String targetBucket, String targetKey, boolean deleteSource) {
         CopyObjectRequest copyObjectRequest = new CopyObjectRequest(sourceBucket, sourceKey, targetBucket, targetKey);
+        // specify the object metadata to ensure SSE algorithm is used
+        String sseAlgorithm = objectMetadata.getSSEAlgorithm();
+        if (sseAlgorithm != null) {
+            ObjectMetadata newObjectMetadata = new ObjectMetadata();
+            newObjectMetadata.setSSEAlgorithm(sseAlgorithm);
+            copyObjectRequest.setNewObjectMetadata(newObjectMetadata);
+        }
         amazonS3.copyObject(copyObjectRequest);
         if (deleteSource) {
             amazonS3.deleteObject(sourceBucket, sourceKey);
