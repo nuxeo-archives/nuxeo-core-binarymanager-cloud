@@ -15,7 +15,7 @@ For efficiency, a local disk cache (with limited size) is also used.
 
 ## QA results
 
-[![Build Status](https://qa.nuxeo.org/jenkins/buildStatus/icon?job=addons_nuxeo-core-binarymanager-cloud-master)](https://qa.nuxeo.org/jenkins/job/addons_nuxeo-core-binarymanager-cloud-master/)
+[![Build Status](https://qa.nuxeo.org/jenkins/buildStatus/icon?job=addons_nuxeo-core-binarymanager-cloud-master)](https://qa.nuxeo.org/jenkins/job/master/job/addons_nuxeo-core-binarymanager-cloud-master/)
 
 # About Nuxeo
 
